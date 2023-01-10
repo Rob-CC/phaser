@@ -18,3 +18,4 @@ scripts/tsgen/test/bin/
 scripts/tsgen/test/output.txt
 
 plugins/spine/spine-runtimes/
+plugins/spine*/spine-runtimes/
