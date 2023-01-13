@@ -638,6 +638,7 @@ var SpinePlugin = new Class({
      * @param {Phaser.Types.Loader.XHRSettingsObject} [textureXhrSettings] - An XHR Settings configuration object for the Spine json file. Used in replacement of the Loaders default XHR Settings.
      * @param {Phaser.Types.Loader.XHRSettingsObject} [atlasXhrSettings] - An XHR Settings configuration object for the Spine atlas file. Used in replacement of the Loaders default XHR Settings.
      * @param {object} [settings] - An external Settings configuration object { prefix: '' }
+     * 
      * @return {Phaser.ifLoader.LoaderPlugin} The Loader instance.
      */
     spineFileCallback: function (key, jsonURL, atlasURL, preMultipliedAlpha, jsonXhrSettings, atlasXhrSettings, settings)
