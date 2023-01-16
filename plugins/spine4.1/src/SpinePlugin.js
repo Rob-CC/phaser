@@ -1,6 +1,6 @@
 /**
  * @author       Richard Davey <rich@photonstorm.com>
- * @copyright    2020 Photon Storm Ltd.
+ * @copyright    2022 Photon Storm Ltd.
  * @license      {@link https://github.com/photonstorm/phaser/blob/master/license.txt|MIT License}
  */
 
@@ -9,14 +9,16 @@ var Class = require('../../../src/utils/Class');
 var GetValue = require('../../../src/utils/object/GetValue');
 var ResizeEvent = require('../../../src/scale/events/RESIZE_EVENT');
 var ScenePlugin = require('../../../src/plugins/ScenePlugin');
-var Spine = require('Spine');
+var SpineCanvas = require('SpineCanvas');
+var SpineWebgl = require('SpineWebgl');
+var Spine = {
+    canvas: SpineCanvas,
+    webgl: SpineWebgl
+};
 var SpineFile = require('./SpineFile');
 var SpineGameObject = require('./gameobject/SpineGameObject');
 var SpineContainer = require('./container/SpineContainer');
 var NOOP = require('../../../src/utils/NOOP');
-
-//  Plugin specific instance of the Spine Scene Renderer
-var sceneRenderer;
 
 /**
  * @classdesc
@@ -69,6 +71,17 @@ var sceneRenderer;
  * same Scene. Alternatively, you can use the method `this.load.plugin` to load the plugin via the normal
  * Phaser Loader. However, doing so will not add it to the current Scene. It will be available from any
  * subsequent Scenes.
+ *
+ * ## A note about inlined data:
+ *
+ * If you need to load Spine assets from inline / base64 encoded data, then you should not use the Loader
+ * at all. Instead, call the functions directly as required:
+ *
+ * scene.cache.json.add
+ * scene.cache.custom.spine.add
+ * scene.textures.addBase64
+ *
+ * ## Using the plugin
  *
  * Assuming a default environment you access it from within a Scene by using the `this.spine` reference.
  *
@@ -444,33 +457,16 @@ var SpinePlugin = new Class({
      */
     bootWebGL: function ()
     {
-        //  Monkeypatch the Spine setBlendMode functions, or batching is destroyed!
-
-        var setBlendMode = function (srcBlend, dstBlend)
-        {
-            if (srcBlend !== this.srcBlend || dstBlend !== this.dstBlend)
-            {
-                var gl = this.context.gl;
-
-                this.srcBlend = srcBlend;
-                this.dstBlend = dstBlend;
-
-                if (this.isDrawing)
-                {
-                    this.flush();
-                    gl.blendFunc(this.srcBlend, this.dstBlend);
-                }
-            }
-        };
+        var sceneRenderer = this.renderer.spineSceneRenderer;
 
         if (!sceneRenderer)
         {
             sceneRenderer = new Spine.webgl.SceneRenderer(this.renderer.canvas, this.gl, true);
-            sceneRenderer.batcher.setBlendMode = setBlendMode;
-            sceneRenderer.shapes.setBlendMode = setBlendMode;
+
+            this.renderer.spineSceneRenderer = sceneRenderer;
         }
 
-        //  All share the same instance
+        //  All scene share the same instance
         this.sceneRenderer = sceneRenderer;
         this.skeletonRenderer = sceneRenderer.skeletonRenderer;
         this.skeletonDebugRenderer = sceneRenderer.skeletonDebugRenderer;
@@ -511,7 +507,7 @@ var SpinePlugin = new Class({
         {
             var textures = this.textures;
 
-            atlas = new Spine.TextureAtlas(atlasEntry.data, function (path)
+            atlas = new this.runtime.TextureAtlas(atlasEntry.data, function (path)
             {
                 return new Spine.canvas.CanvasTexture(textures.get(atlasEntry.prefix + path).getSourceImage());
             });
@@ -556,7 +552,7 @@ var SpinePlugin = new Class({
 
             gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
 
-            atlas = new Spine.TextureAtlas(atlasEntry.data, function (path)
+            atlas = new this.runtime.TextureAtlas(atlasEntry.data, function (path)
             {
                 return new Spine.webgl.GLTexture(gl, textures.get(atlasEntry.prefix + path).getSourceImage(), false);
             });
@@ -643,11 +639,13 @@ var SpinePlugin = new Class({
      * @param {Phaser.Types.Loader.XHRSettingsObject} [atlasXhrSettings] - An XHR Settings configuration object for the Spine atlas file. Used in replacement of the Loaders default XHR Settings.
      * @param {object} [settings] - An external Settings configuration object { prefix: '' }
      * 
-     * @return {Phaser.Loader.LoaderPlugin} The Loader instance.
+     * @return {Phaser.ifLoader.LoaderPlugin} The Loader instance.
      */
     spineFileCallback: function (key, jsonURL, atlasURL, preMultipliedAlpha, jsonXhrSettings, atlasXhrSettings, settings)
     {
         var multifile;
+
+        settings = settings || {};
 
         if (Array.isArray(key))
         {
@@ -657,7 +655,7 @@ var SpinePlugin = new Class({
 
                 // Support prefix key
                 multifile.prefix = multifile.prefix || settings.prefix || '';
-
+                 
                 this.addFile(multifile.files);
             }
         }
@@ -667,7 +665,7 @@ var SpinePlugin = new Class({
 
             // Support prefix key
             multifile.prefix = multifile.prefix || settings.prefix || '';
-
+            
             this.addFile(multifile.files);
         }
 
@@ -706,15 +704,15 @@ var SpinePlugin = new Class({
         {
             bone.parent.worldToLocal(temp2.set(temp1.x - skeleton.x, temp1.y - skeleton.y, 0));
 
-            return new Spine.Vector2(temp2.x, temp2.y);
+            return new this.runtime.Vector2(temp2.x, temp2.y);
         }
         else if (bone)
         {
-            return new Spine.Vector2(temp1.x - skeleton.x, temp1.y - skeleton.y);
+            return new this.runtime.Vector2(temp1.x - skeleton.x, temp1.y - skeleton.y);
         }
         else
         {
-            return new Spine.Vector2(temp1.x, temp1.y);
+            return new this.runtime.Vector2(temp1.x, temp1.y);
         }
     },
 
@@ -731,7 +729,7 @@ var SpinePlugin = new Class({
      */
     getVector2: function (x, y)
     {
-        return new Spine.Vector2(x, y);
+        return new this.runtime.Vector2(x, y);
     },
 
     /**
@@ -977,14 +975,39 @@ var SpinePlugin = new Class({
 
         if (!this.spineTextures.has(atlasKey))
         {
+            var gl = this.gl;
+            var i;
+            var atlasPage;
+
+            var realTextureKey;
+
+            if (this.isWebGL)
+            {
+                gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
+            }
+
+            for (i = 0; i < atlas.pages.length; i ++)
+            {
+                atlasPage = atlas.pages[i];
+                realTextureKey = atlasData.prefix ? atlasData.prefix + atlasPage.name : atlasPage.name;
+                if (this.isWebGL)
+                {
+                    atlasPage.setTexture(new this.runtime.GLTexture(gl, this.textures.get(realTextureKey).getSourceImage(), false));
+                }
+                else
+                {
+                    atlasPage.setTexture(new this.runtime.CanvasTexture(this.textures.get(realTextureKey).getSourceImage()));
+                }
+            }
+        
             this.spineTextures.add(atlasKey, atlas);
         }
 
         var preMultipliedAlpha = atlasData.preMultipliedAlpha;
 
-        var atlasLoader = new Spine.AtlasAttachmentLoader(atlas);
+        var atlasLoader = new this.runtime.AtlasAttachmentLoader(atlas);
 
-        var skeletonJson = new Spine.SkeletonJson(atlasLoader);
+        var skeletonJson = new this.runtime.SkeletonJson(atlasLoader);
 
         var data;
 
@@ -1003,7 +1026,7 @@ var SpinePlugin = new Class({
         {
             var skeletonData = skeletonJson.readSkeletonData(data);
 
-            var skeleton = new Spine.Skeleton(skeletonData);
+            var skeleton = new this.runtime.Skeleton(skeletonData);
 
             return { skeletonData: skeletonData, skeleton: skeleton, preMultipliedAlpha: preMultipliedAlpha };
         }
@@ -1027,9 +1050,9 @@ var SpinePlugin = new Class({
      */
     createAnimationState: function (skeleton)
     {
-        var stateData = new Spine.AnimationStateData(skeleton.data);
+        var stateData = new this.runtime.AnimationStateData(skeleton.data);
 
-        var state = new Spine.AnimationState(stateData);
+        var state = new this.runtime.AnimationState(stateData);
 
         return { stateData: stateData, state: state };
     },
@@ -1051,8 +1074,8 @@ var SpinePlugin = new Class({
      */
     getBounds: function (skeleton)
     {
-        var offset = new Spine.Vector2();
-        var size = new Spine.Vector2();
+        var offset = new this.runtime.Vector2();
+        var size = new this.runtime.Vector2();
 
         skeleton.getBounds(offset, size, []);
 
@@ -1143,12 +1166,14 @@ var SpinePlugin = new Class({
 
         this.pluginManager = null;
 
+        var sceneRenderer = this.renderer.spineSceneRenderer;
+
         if (sceneRenderer)
         {
             sceneRenderer.dispose();
-            sceneRenderer = null;
         }
 
+        this.renderer.spineSceneRenderer = null;
         this.sceneRenderer = null;
     }
 
